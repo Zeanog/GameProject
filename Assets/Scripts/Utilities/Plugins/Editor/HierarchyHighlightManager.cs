@@ -13,18 +13,36 @@ namespace Neo.Utility {
         public static Vector2   TextOffset {
             get {
                 if( m_TextOffset == null ) {
-                    string encodedVal = PlayerPrefs.GetString("HierarchyHighlight.Offset", "17.2,0");
+                    var dataPath = System.IO.Path.Combine( UnityEngine.Application.dataPath, "HierarchyHighlight.Offset" );
+                    string encodedVal = System.IO.File.Exists(dataPath) ? System.IO.File.ReadAllText(dataPath) : "0,0";
+                    if (string.IsNullOrEmpty(encodedVal)) {
+                        encodedVal = "0,0";
+                    }
                     m_TextOffset = new Mutable<Vector2>( Vector2Extensions.Parse(encodedVal) );
                 }
                 return m_TextOffset.Value;
             }
 
             set {
-                m_TextOffset.Value = value;
-                if( m_TextOffset.HasChanged ) {
-                    PlayerPrefs.SetString( "HierarchyHighlight.Offset", m_TextOffset.Value.ToString() );
+                if (m_TextOffset == null)
+                {
+                    m_TextOffset = new Mutable<Vector2>(value);
+                    var dataPath = System.IO.Path.Combine(UnityEngine.Application.dataPath, "HierarchyHighlight.Offset");
+                    System.IO.File.WriteAllText(dataPath, m_TextOffset.Value.ToString());
                     EditorApplication.RepaintHierarchyWindow();
                 }
+                else
+                {
+                    m_TextOffset.Value = value;
+                    if (m_TextOffset.HasChanged)
+                    {
+                        var dataPath = System.IO.Path.Combine(UnityEngine.Application.dataPath, "HierarchyHighlight.Offset");
+                        System.IO.File.WriteAllText(dataPath, m_TextOffset.Value.ToString());
+                        EditorApplication.RepaintHierarchyWindow();
+                    }
+                }
+
+                
             }
         }
     
@@ -77,7 +95,11 @@ namespace Neo.Utility {
         void OnGUI() {
             TextFontStyle = (FontStyle)EditorGUILayout.EnumPopup( "Font Style", TextFontStyle );
             TextAlignment = (TextAnchor)EditorGUILayout.EnumPopup( "Alignment", TextAlignment );
-            TextOffset = EditorGUILayout.Vector2Field( "Highlight Text Offset", TextOffset );
+            var offset = EditorGUILayout.Vector2Field( "Highlight Text Offset", TextOffset);
+            if(TextOffset != offset) {
+                TextOffset = offset;
+                // Save offset to a file or something so it can be loaded for other projects and people.
+            }
         }
     
         protected static void   Decorate( EntityId entityId, Rect selectionRect ) {
@@ -93,9 +115,6 @@ namespace Neo.Utility {
     
             selectionRect.x += TextOffset.x;
             selectionRect.y += TextOffset.y;
-    
-            //selectionRect.width *= m_Scale.x;
-            //selectionRect.height *= m_Scale.y;
     
             AHierarchyDecorator comp = go.GetComponent<AHierarchyDecorator>();
             if( comp != null ) {
