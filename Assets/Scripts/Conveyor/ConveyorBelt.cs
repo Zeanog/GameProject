@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -25,6 +26,9 @@ public class ConveyorBelt : MonoBehaviour
             SetTextureSpeed(speed);
         }
     }
+
+    [SerializeField, Tooltip("Temp hack to determine the conversion factor from world units to UV units.")]
+    protected float worldToUVScale = 0.75f;
 
     [SerializeField, Tooltip("Local direction of belt tangent (in local space).")]
     protected ETopDirection conveyorDirection = ETopDirection.Forward;
@@ -56,24 +60,54 @@ public class ConveyorBelt : MonoBehaviour
             //Length: meshCollider
             var length = conveyorAnimator.GetComponent<MeshCollider>().sharedMesh.bounds.extents.z * 2.0f;
             var time = length / worldSpeed;
-            conveyorAnimator.TextureSpeed = -ConveyorDirection * worldSpeed;
+            conveyorAnimator.TextureSpeed = worldToUVScale * -ConveyorDirection * worldSpeed;
         }
     }
 
     public void ApplyForces(Collision collision)
     {
-        var rigidBody = collision.rigidbody;
-        if (rigidBody == null)
-        {
-            return;
-        }
+        //var rigidBody = collision.rigidbody;
+        //if (rigidBody == null)
+        //{
+        //    return;
+        //}
 
-        for (int ix = 0; ix < collision.contactCount; ++ix)
+        for (int ix = 0; ix < 1/*collision.contactCount*/; ++ix)
         {
             var contactPoint = collision.GetContact(ix);
             var collider = contactPoint.otherCollider;
-
-            collider.attachedRigidbody?.AddForceAtPosition(transform.forward * ConveyorDirection * Speed, contactPoint.point, ForceMode.VelocityChange);
+            var rigidBody = collider.attachedRigidbody;
+            
+            var targetVelocity = transform.forward * ConveyorDirection * Speed;
+            
+            StartCoroutine(ApplyForce(rigidBody, targetVelocity, contactPoint));
         }
+    }
+
+    public IEnumerator ApplyForce(Rigidbody rigidBody, Vector3 targetVelocity, ContactPoint contactPoint)
+    {
+        if(!rigidBody)
+        {
+            yield break;
+        }
+
+        //rigidBody.isKinematic = true;
+
+        //yield return new WaitForEndOfFrame();
+
+        Vector3 contactPointVelocity = rigidBody.GetPointVelocity(contactPoint.point);
+        var contactPointDeltaVelocity = targetVelocity - contactPointVelocity;//Vector3.Dot(rigidBody.linearVelocity, transform.forward) * transform.forward;
+        var deltaVelocity = targetVelocity - Vector3.Dot(rigidBody.linearVelocity, transform.forward) * transform.forward;
+
+        if (deltaVelocity.sqrMagnitude < 0.0001f)
+        {
+            rigidBody.MovePosition( rigidBody.position + targetVelocity * Time.deltaTime);
+        }
+        else
+        {
+            rigidBody.AddForceAtPosition(deltaVelocity, contactPoint.point, ForceMode.VelocityChange);
+        }
+
+        //rigidBody.isKinematic = false;
     }
 }
