@@ -95,8 +95,8 @@ public class ConveyorBelt : MonoBehaviour
 
         //yield return new WaitForEndOfFrame();
 
-        Vector3 contactPointVelocity = rigidBody.GetPointVelocity(contactPoint.point);
-        var contactPointDeltaVelocity = targetVelocity - contactPointVelocity;//Vector3.Dot(rigidBody.linearVelocity, transform.forward) * transform.forward;
+        //Vector3 contactPointVelocity = rigidBody.GetPointVelocity(contactPoint.point);
+        //var contactPointDeltaVelocity = targetVelocity - contactPointVelocity;//Vector3.Dot(rigidBody.linearVelocity, transform.forward) * transform.forward;
         var deltaVelocity = targetVelocity - Vector3.Dot(rigidBody.linearVelocity, transform.forward) * transform.forward;
 
         if (deltaVelocity.sqrMagnitude < 0.0001f)
