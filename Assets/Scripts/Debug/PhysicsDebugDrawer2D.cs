@@ -1,242 +1,747 @@
 using System.Collections.Generic;
 using UnityEngine;
+using PhysicsWidgets2D;
 
 /// <summary>
-/// Runtime debug drawer for 2D physics objects.
-/// - Draws outlines for common Collider2D types (Box, Circle, Capsule, Polygon, Edge, Composite).
-/// - Draws velocity arrows for Rigidbody2D.
-/// Designed for quick visual debugging in Play mode. Tweak colors, layer mask and update interval.
+/// Scene-wide runtime debug drawer for Unity 2D physics.
+/// Draws collider outlines, Rigidbody2D velocity, conveyor directions,
+/// and water-current direction and magnitude.
+/// Add one instance to the scene.
 /// </summary>
 [AddComponentMenu("Debug/Physics Debug Drawer 2D")]
 [ExecuteAlways]
 public class PhysicsDebugDrawer2D : MonoBehaviour
 {
-    [SerializeField] LayerMask layers = ~0;
-    [SerializeField] bool drawColliders = true;
-    [SerializeField] Color colliderColor = new Color(0f, 1f, 0f, 0.9f);
-    [SerializeField] bool drawRigidbodies = true;
-    [SerializeField] Color rigidbodyColor = new Color(1f, 0.8f, 0f, 0.95f);
-    [SerializeField, Tooltip("Scale applied to velocity when drawing arrows")]
-    float velocityScale = 0.2f;
-    [SerializeField, Tooltip("Seconds between debug redraws (low cost if > 0).")]
-    float updateInterval = 0.05f;
-    [SerializeField, Range(8, 64)] int circleSegments = 24;
+    [Header("Filtering")]
+    [SerializeField] private LayerMask layers = ~0;
+    [SerializeField] private bool includeInactiveObjects = false;
 
-    float _timer = 0f;
+    [Header("Collider Drawing")]
+    [SerializeField] private bool drawColliders = true;
+    [SerializeField] private Color solidColliderColor = new Color(0f, 1f, 0f, 0.9f);
+    [SerializeField] private Color triggerColliderColor = new Color(0f, 0.8f, 1f, 0.9f);
+    [SerializeField] private bool drawTriggers = true;
+    [SerializeField] private bool depthTest = false;
 
-    void Update()
+    [Header("Rigidbody Drawing")]
+    [SerializeField] private bool drawRigidbodies = true;
+    [SerializeField] private Color rigidbodyColor = new Color(1f, 0.8f, 0f, 0.95f);
+    [SerializeField] private bool drawCenterOfMass = true;
+    [SerializeField, Min(0.001f)] private float centerOfMassSize = 0.08f;
+    [SerializeField, Tooltip("Scale applied to Rigidbody2D velocity arrows.")]
+    private float velocityScale = 0.2f;
+
+    [Header("Conveyor Drawing")]
+    [SerializeField] private bool drawConveyorDirections = true;
+    [SerializeField] private bool drawBottomConveyorArrow = true;
+    [SerializeField] private Color conveyorColor = new Color(1f, 0.25f, 0.1f, 1f);
+    [SerializeField, Min(0.05f)] private float conveyorArrowLength = 1f;
+    [SerializeField, Min(0f)] private float conveyorArrowInset = 0.06f;
+    [SerializeField, Min(0.01f)] private float conveyorArrowHeadSize = 0.16f;
+
+    [Header("Water Current Drawing")]
+    [SerializeField] private bool drawWaterCurrents = true;
+    [SerializeField] private Color waterCurrentColor = new Color(0.1f, 0.9f, 1f, 1f);
+
+    [Tooltip("Arrow length when the current magnitude is nearly zero.")]
+    [SerializeField, Min(0f)]
+    private float waterCurrentBaseLength = 0.5f;
+
+    [Tooltip("Additional arrow length per unit of current speed.")]
+    [SerializeField, Min(0f)]
+    private float waterCurrentMagnitudeScale = 0.5f;
+
+    [SerializeField, Min(0.01f)]
+    private float waterCurrentArrowHeadSize = 0.16f;
+
+    [Tooltip(
+        "Vertical location of the arrow inside the water volume. " +
+        "Zero is the bottom and one is the top.")]
+    [SerializeField, Range(0f, 1f)]
+    private float waterCurrentVerticalPosition = 0.5f;
+
+    [Tooltip(
+        "Current magnitudes at or below this value are treated as zero " +
+        "and do not draw an arrow.")]
+    [SerializeField, Min(0f)]
+    private float minimumWaterCurrentMagnitude = 0.001f;
+
+    [Header("Refresh")]
+    [SerializeField, Min(0.01f)] private float updateInterval = 0.05f;
+    [SerializeField, Min(0.05f)] private float objectRefreshInterval = 0.5f;
+
+    private float drawTimer;
+    private float objectRefreshTimer;
+
+    private Collider2D[] colliders = new Collider2D[0];
+    private Rigidbody2D[] rigidbodies = new Rigidbody2D[0];
+    private NewConveyorBelt2D[] conveyors = new NewConveyorBelt2D[0];
+    private WaterVolume2D[] waterVolumes = new WaterVolume2D[0];
+
+    private readonly Dictionary<Collider2D, ColliderGeometry> geometryCache =
+        new Dictionary<Collider2D, ColliderGeometry>();
+
+    private sealed class ColliderGeometry
     {
-        // Keep light-weight: redraw only every updateInterval seconds
-        _timer += Application.isPlaying ? Time.unscaledDeltaTime : Time.deltaTime;
-        if (_timer >= Mathf.Max(0.0001f, updateInterval))
+        public uint ShapeHash;
+        public Vector3[] Vertices;
+        public BoundaryEdge[] Edges;
+        public bool VerticesAreWorldSpace;
+    }
+
+    private readonly struct BoundaryEdge
+    {
+        public readonly int Start;
+        public readonly int End;
+
+        public BoundaryEdge(int start, int end)
         {
-            _timer = 0f;
-            DrawAll();
+            Start = start;
+            End = end;
         }
     }
 
-    void DrawAll()
+    private readonly struct EdgeKey
     {
-        if (drawColliders)
-        {
-            var colliders = Object.FindObjectsOfType<Collider2D>();
-            for (int i = 0; i < colliders.Length; ++i)
-            {
-                var c = colliders[i];
-                if (((1 << c.gameObject.layer) & layers) == 0)
-                    continue;
+        public readonly int A;
+        public readonly int B;
 
-                DrawCollider(c, colliderColor);
+        public EdgeKey(int a, int b)
+        {
+            if(a <= b)
+            {
+                A = a;
+                B = b;
+            }
+            else
+            {
+                A = b;
+                B = a;
             }
         }
 
-        if (drawRigidbodies)
+        public override bool Equals(object obj)
         {
-            var bodies = Object.FindObjectsOfType<Rigidbody2D>();
-            for (int i = 0; i < bodies.Length; ++i)
-            {
-                var rb = bodies[i];
-                if (((1 << rb.gameObject.layer) & layers) == 0)
-                    continue;
+            return obj is EdgeKey other &&
+                   A == other.A &&
+                   B == other.B;
+        }
 
-                DrawRigidbody(rb, rigidbodyColor);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                return (A * 397) ^ B;
             }
         }
     }
 
-    void DrawCollider(Collider2D c, Color col)
+    private void OnEnable()
     {
-        // Use short lifetime so lines refresh - using updateInterval * 0.9f keeps them visible between updates
-        float duration = Mathf.Max(0.01f, updateInterval * 0.9f);
+        RefreshObjects();
+    }
 
-        if (c is BoxCollider2D box)
+    private void OnDisable()
+    {
+        geometryCache.Clear();
+    }
+
+    private void OnDestroy()
+    {
+        geometryCache.Clear();
+    }
+
+    private void OnValidate()
+    {
+        updateInterval = Mathf.Max(0.01f, updateInterval);
+        objectRefreshInterval = Mathf.Max(0.05f, objectRefreshInterval);
+        centerOfMassSize = Mathf.Max(0.001f, centerOfMassSize);
+        conveyorArrowLength = Mathf.Max(0.05f, conveyorArrowLength);
+        conveyorArrowInset = Mathf.Max(0f, conveyorArrowInset);
+        conveyorArrowHeadSize = Mathf.Max(0.01f, conveyorArrowHeadSize);
+        waterCurrentBaseLength = Mathf.Max(0f, waterCurrentBaseLength);
+        waterCurrentMagnitudeScale = Mathf.Max(0f, waterCurrentMagnitudeScale);
+        waterCurrentArrowHeadSize = Mathf.Max(0.01f, waterCurrentArrowHeadSize);
+        minimumWaterCurrentMagnitude = Mathf.Max(0f, minimumWaterCurrentMagnitude);
+
+        RefreshObjects();
+        geometryCache.Clear();
+    }
+
+    private void Update()
+    {
+        float deltaTime =
+            Application.isPlaying
+            ? Time.unscaledDeltaTime
+            : Time.deltaTime;
+
+        objectRefreshTimer += deltaTime;
+
+        if(objectRefreshTimer >= objectRefreshInterval)
         {
-            Vector2 size = Vector2.Scale(box.size, box.transform.lossyScale);
-            Vector2 offset = box.offset;
-            var t = box.transform;
-            Vector3[] corners = new Vector3[4];
-            corners[0] = t.TransformPoint(offset + new Vector2(-size.x, -size.y) * 0.5f);
-            corners[1] = t.TransformPoint(offset + new Vector2(size.x, -size.y) * 0.5f);
-            corners[2] = t.TransformPoint(offset + new Vector2(size.x, size.y) * 0.5f);
-            corners[3] = t.TransformPoint(offset + new Vector2(-size.x, size.y) * 0.5f);
-            DrawLoop(corners, col, duration);
+            objectRefreshTimer = 0f;
+            RefreshObjects();
+            RemoveDestroyedCacheEntries();
         }
-        else if (c is CircleCollider2D circ)
+
+        drawTimer += deltaTime;
+
+        if(drawTimer < updateInterval)
+            return;
+
+        drawTimer = 0f;
+        DrawAll();
+    }
+
+    private void RefreshObjects()
+    {
+        FindObjectsInactive inactiveMode =
+            includeInactiveObjects
+            ? FindObjectsInactive.Include
+            : FindObjectsInactive.Exclude;
+
+        colliders = FindObjectsByType<Collider2D>(
+            inactiveMode,
+            FindObjectsSortMode.None);
+
+        rigidbodies = FindObjectsByType<Rigidbody2D>(
+            inactiveMode,
+            FindObjectsSortMode.None);
+
+        conveyors = FindObjectsByType<NewConveyorBelt2D>(
+            inactiveMode,
+            FindObjectsSortMode.None);
+
+        waterVolumes = FindObjectsByType<WaterVolume2D>(
+            inactiveMode,
+            FindObjectsSortMode.None);
+    }
+
+    private void DrawAll()
+    {
+        float duration = Mathf.Max(0.01f, updateInterval * 1.1f);
+
+        if(drawColliders)
+            DrawAllColliders(duration);
+
+        if(drawRigidbodies)
+            DrawAllRigidbodies(duration);
+
+        if(drawConveyorDirections)
+            DrawAllConveyors(duration);
+
+        if(drawWaterCurrents)
+            DrawAllWaterCurrents(duration);
+    }
+
+    private void DrawAllColliders(float duration)
+    {
+        for(int i = 0; i < colliders.Length; i++)
         {
-            Vector2 offset = circ.offset;
-            var t = circ.transform;
-            float scale = Mathf.Max(Mathf.Abs(t.lossyScale.x), Mathf.Abs(t.lossyScale.y));
-            Vector3 center = t.TransformPoint(offset);
-            float radius = circ.radius * scale;
-            DrawCircle(center, radius, circleSegments, col, duration);
+            Collider2D collider = colliders[i];
+
+            if(!ShouldDraw(collider) || !collider.enabled)
+                continue;
+
+            if(collider.isTrigger && !drawTriggers)
+                continue;
+
+            Color color =
+                collider.isTrigger
+                ? triggerColliderColor
+                : solidColliderColor;
+
+            DrawCollider(collider, color, duration);
         }
-        else if (c is CapsuleCollider2D cap)
+    }
+
+    private void DrawAllRigidbodies(float duration)
+    {
+        for(int i = 0; i < rigidbodies.Length; i++)
         {
-            DrawCapsuleApprox(cap, col, duration);
+            Rigidbody2D body = rigidbodies[i];
+
+            if(!ShouldDraw(body))
+                continue;
+
+            DrawRigidbody(body, rigidbodyColor, duration);
         }
-        else if (c is PolygonCollider2D poly)
+    }
+
+    private void DrawAllConveyors(float duration)
+    {
+        for(int i = 0; i < conveyors.Length; i++)
         {
-            var t = poly.transform;
-            for (int p = 0; p < poly.pathCount; ++p)
+            NewConveyorBelt2D conveyor = conveyors[i];
+
+            if(!ShouldDraw(conveyor) || !conveyor.enabled)
+                continue;
+
+            Collider2D collider = conveyor.GetComponent<Collider2D>();
+
+            if(collider == null || !collider.enabled)
+                continue;
+
+            DrawConveyor(conveyor, collider, duration);
+        }
+    }
+
+    private void DrawAllWaterCurrents(float duration)
+    {
+        for(int i = 0; i < waterVolumes.Length; i++)
+        {
+            WaterVolume2D water = waterVolumes[i];
+
+            if(!ShouldDraw(water) || !water.enabled)
+                continue;
+
+            Collider2D collider = water.GetComponent<Collider2D>();
+
+            if(collider == null || !collider.enabled)
+                continue;
+
+            DrawWaterCurrent(water, collider, duration);
+        }
+    }
+
+    private bool ShouldDraw(Component component)
+    {
+        if(component == null ||
+           !component.gameObject.activeInHierarchy)
+        {
+            return false;
+        }
+
+        return ((1 << component.gameObject.layer) & layers.value) != 0;
+    }
+
+    private void DrawCollider(
+        Collider2D collider,
+        Color color,
+        float duration)
+    {
+        ColliderGeometry geometry = GetOrCreateGeometry(collider);
+
+        if(geometry != null)
+        {
+            DrawMeshBoundary(collider, geometry, color, duration);
+            return;
+        }
+
+        if(collider is EdgeCollider2D edge)
+        {
+            DrawEdgeCollider(edge, color, duration);
+            return;
+        }
+
+        DrawBounds(collider.bounds, color, duration);
+    }
+
+    private ColliderGeometry GetOrCreateGeometry(Collider2D collider)
+    {
+        uint shapeHash = collider.GetShapeHash();
+
+        if(geometryCache.TryGetValue(
+                collider,
+                out ColliderGeometry geometry) &&
+           geometry.ShapeHash == shapeHash)
+        {
+            return geometry;
+        }
+
+        Mesh mesh = collider.CreateMesh(false, false, true);
+
+        if(mesh == null)
+        {
+            geometryCache.Remove(collider);
+            return null;
+        }
+
+        geometry = new ColliderGeometry
+        {
+            ShapeHash = shapeHash,
+            Vertices = mesh.vertices,
+            Edges = ExtractBoundaryEdges(mesh.triangles),
+            VerticesAreWorldSpace = collider.attachedRigidbody == null
+        };
+
+        geometryCache[collider] = geometry;
+        DestroyGeneratedMesh(mesh);
+
+        return geometry;
+    }
+
+    private static BoundaryEdge[] ExtractBoundaryEdges(int[] triangles)
+    {
+        Dictionary<EdgeKey, int> edgeCounts =
+            new Dictionary<EdgeKey, int>();
+
+        for(int i = 0; i + 2 < triangles.Length; i += 3)
+        {
+            CountEdge(edgeCounts, triangles[i], triangles[i + 1]);
+            CountEdge(edgeCounts, triangles[i + 1], triangles[i + 2]);
+            CountEdge(edgeCounts, triangles[i + 2], triangles[i]);
+        }
+
+        List<BoundaryEdge> boundaries =
+            new List<BoundaryEdge>();
+
+        foreach(KeyValuePair<EdgeKey, int> entry in edgeCounts)
+        {
+            if(entry.Value == 1)
             {
-                Vector2[] pts = poly.GetPath(p);
-                if (pts.Length < 2) continue;
-                Vector3[] world = new Vector3[pts.Length];
-                for (int i = 0; i < pts.Length; ++i)
-                    world[i] = t.TransformPoint(poly.offset + pts[i]);
-                DrawLoop(world, col, duration);
+                boundaries.Add(
+                    new BoundaryEdge(
+                        entry.Key.A,
+                        entry.Key.B));
             }
         }
-        else if (c is EdgeCollider2D edge)
-        {
-            var t = edge.transform;
-            Vector2[] pts = edge.points;
-            for (int i = 0; i < pts.Length - 1; ++i)
-            {
-                Vector3 a = t.TransformPoint(edge.offset + pts[i]);
-                Vector3 b = t.TransformPoint(edge.offset + pts[i + 1]);
-                Debug.DrawLine(a, b, col, duration);
-            }
-        }
-        else if (c is CompositeCollider2D comp)
-        {
-            var t = comp.transform;
-            int paths = comp.pathCount;
-            for (int p = 0; p < paths; ++p)
-            {
-                Vector2[] pts = new Vector2[comp.GetPathPointCount(p)];
-                comp.GetPath(p, pts);
-                if (pts.Length < 2) continue;
-                Vector3[] world = new Vector3[pts.Length];
-                for (int i = 0; i < pts.Length; ++i)
-                    world[i] = t.TransformPoint(pts[i]);
-                DrawLoop(world, col, duration);
-            }
-        }
+
+        return boundaries.ToArray();
+    }
+
+    private static void CountEdge(
+        Dictionary<EdgeKey, int> edgeCounts,
+        int start,
+        int end)
+    {
+        EdgeKey key = new EdgeKey(start, end);
+
+        if(edgeCounts.TryGetValue(key, out int count))
+            edgeCounts[key] = count + 1;
         else
+            edgeCounts.Add(key, 1);
+    }
+
+    private void DrawMeshBoundary(
+        Collider2D collider,
+        ColliderGeometry geometry,
+        Color color,
+        float duration)
+    {
+        Rigidbody2D attachedBody = collider.attachedRigidbody;
+
+        for(int i = 0; i < geometry.Edges.Length; i++)
         {
-            // Fallback: draw bounds
-            Bounds b = c.bounds;
-            Vector3 a = b.min;
-            Vector3 b0 = new Vector3(b.max.x, b.min.y, b.min.z);
-            Vector3 c0 = new Vector3(b.max.x, b.max.y, b.min.z);
-            Vector3 d = new Vector3(b.min.x, b.max.y, b.min.z);
-            Debug.DrawLine(a, b0, col, duration);
-            Debug.DrawLine(b0, c0, col, duration);
-            Debug.DrawLine(c0, d, col, duration);
-            Debug.DrawLine(d, a, col, duration);
+            BoundaryEdge edge = geometry.Edges[i];
+
+            Vector3 start = geometry.Vertices[edge.Start];
+            Vector3 end = geometry.Vertices[edge.End];
+
+            if(!geometry.VerticesAreWorldSpace &&
+               attachedBody != null)
+            {
+                start = attachedBody.transform.TransformPoint(start);
+                end = attachedBody.transform.TransformPoint(end);
+            }
+
+            Debug.DrawLine(
+                start,
+                end,
+                color,
+                duration,
+                depthTest);
         }
     }
 
-    void DrawRigidbody(Rigidbody2D rb, Color col)
+    private void DrawEdgeCollider(
+        EdgeCollider2D edge,
+        Color color,
+        float duration)
     {
-        float duration = Mathf.Max(0.01f, updateInterval * 0.9f);
-        Vector3 origin = rb.worldCenterOfMass;
-        Vector3 end = origin + (Vector3)(rb.linearVelocity * velocityScale);
-        Debug.DrawLine(origin, end, col, duration);
-        // Arrow head
-        Vector3 dir = (end - origin).normalized;
-        if (dir.sqrMagnitude > 0.0001f)
+        Vector2[] points = edge.points;
+        Transform edgeTransform = edge.transform;
+
+        for(int i = 0; i + 1 < points.Length; i++)
         {
-            Vector3 right = Quaternion.Euler(0, 0, 135) * dir * 0.25f * velocityScale * 2f;
-            Vector3 left = Quaternion.Euler(0, 0, -135) * dir * 0.25f * velocityScale * 2f;
-            Debug.DrawLine(end, end + right, col, duration);
-            Debug.DrawLine(end, end + left, col, duration);
+            Vector3 start =
+                edgeTransform.TransformPoint(
+                    edge.offset + points[i]);
+
+            Vector3 end =
+                edgeTransform.TransformPoint(
+                    edge.offset + points[i + 1]);
+
+            Debug.DrawLine(
+                start,
+                end,
+                color,
+                duration,
+                depthTest);
         }
     }
 
-    void DrawLoop(Vector3[] pts, Color col, float duration)
+    private void DrawBounds(
+        Bounds bounds,
+        Color color,
+        float duration)
     {
-        if (pts == null || pts.Length < 2) return;
-        for (int i = 0; i < pts.Length; ++i)
+        Vector3 bottomLeft =
+            new Vector3(bounds.min.x, bounds.min.y, bounds.center.z);
+
+        Vector3 bottomRight =
+            new Vector3(bounds.max.x, bounds.min.y, bounds.center.z);
+
+        Vector3 topRight =
+            new Vector3(bounds.max.x, bounds.max.y, bounds.center.z);
+
+        Vector3 topLeft =
+            new Vector3(bounds.min.x, bounds.max.y, bounds.center.z);
+
+        Debug.DrawLine(bottomLeft, bottomRight, color, duration, depthTest);
+        Debug.DrawLine(bottomRight, topRight, color, duration, depthTest);
+        Debug.DrawLine(topRight, topLeft, color, duration, depthTest);
+        Debug.DrawLine(topLeft, bottomLeft, color, duration, depthTest);
+    }
+
+    private void DrawRigidbody(
+        Rigidbody2D body,
+        Color color,
+        float duration)
+    {
+        Vector3 origin = body.worldCenterOfMass;
+
+        Vector3 velocityEnd =
+            origin +
+            (Vector3)(body.linearVelocity * velocityScale);
+
+        Debug.DrawLine(
+            origin,
+            velocityEnd,
+            color,
+            duration,
+            depthTest);
+
+        DrawArrowHead(
+            velocityEnd,
+            velocityEnd - origin,
+            centerOfMassSize,
+            color,
+            duration);
+
+        if(drawCenterOfMass)
         {
-            Vector3 a = pts[i];
-            Vector3 b = pts[(i + 1) % pts.Length];
-            Debug.DrawLine(a, b, col, duration);
+            DrawCross(
+                origin,
+                centerOfMassSize,
+                color,
+                duration);
         }
     }
 
-    void DrawCircle(Vector3 center, float radius, int segments, Color col, float duration)
+    private void DrawConveyor(
+        NewConveyorBelt2D conveyor,
+        Collider2D collider,
+        float duration)
     {
-        if (segments < 3) segments = 3;
-        Vector3 prev = center + new Vector3(radius, 0f, 0f);
-        float step = 360f / segments;
-        for (int i = 1; i <= segments; ++i)
+        Vector2 surfaceVelocity = conveyor.SurfaceVelocity;
+
+        if(surfaceVelocity.sqrMagnitude < 0.000001f)
+            return;
+
+        Vector2 direction = surfaceVelocity.normalized;
+        Vector2 topNormal = new Vector2(-direction.y, direction.x);
+
+        if(Vector2.Dot(topNormal, conveyor.transform.up) < 0f)
+            topNormal = -topNormal;
+
+        Vector2 center = collider.bounds.center;
+        float searchDistance = collider.bounds.extents.magnitude + 1f;
+
+        Vector2 topSurface =
+            collider.ClosestPoint(
+                center + topNormal * searchDistance);
+
+        Vector2 bottomSurface =
+            collider.ClosestPoint(
+                center - topNormal * searchDistance);
+
+        Vector2 topCenter =
+            topSurface -
+            topNormal * conveyorArrowInset;
+
+        DrawCenteredArrow(
+            topCenter,
+            direction,
+            conveyorArrowLength,
+            conveyorArrowHeadSize,
+            conveyorColor,
+            duration);
+
+        if(drawBottomConveyorArrow)
         {
-            float ang = step * i * Mathf.Deg2Rad;
-            Vector3 next = center + new Vector3(Mathf.Cos(ang) * radius, Mathf.Sin(ang) * radius, 0f);
-            Debug.DrawLine(prev, next, col, duration);
-            prev = next;
+            Vector2 bottomCenter =
+                bottomSurface +
+                topNormal * conveyorArrowInset;
+
+            DrawCenteredArrow(
+                bottomCenter,
+                -direction,
+                conveyorArrowLength,
+                conveyorArrowHeadSize,
+                conveyorColor,
+                duration);
         }
     }
 
-    void DrawCapsuleApprox(CapsuleCollider2D cap, Color col, float duration)
+    private void DrawWaterCurrent(
+        WaterVolume2D water,
+        Collider2D collider,
+        float duration)
     {
-        // approximate capsule: draw rectangle + semicircles
-        var t = cap.transform;
-        Vector2 offset = cap.offset;
-        Vector2 size = Vector2.Scale(cap.size, t.lossyScale);
-        bool horizontal = cap.direction == CapsuleDirection2D.Horizontal;
+        float speed = water.HorizontalCurrentSpeed;
+        float magnitude = Mathf.Abs(speed);
 
-        float radius = horizontal ? Mathf.Abs(size.y) * 0.5f : Mathf.Abs(size.x) * 0.5f;
-        float length = (horizontal ? size.x : size.y) - 2f * radius;
-        length = Mathf.Max(0f, length);
+        if(magnitude <= minimumWaterCurrentMagnitude)
+            return;
 
-        Vector3 center = t.TransformPoint(offset);
-        Vector3 axis = horizontal ? t.right : t.up;
-        Vector3 ortho = horizontal ? t.up : t.right;
+        Bounds bounds = collider.bounds;
 
-        Vector3 midA = center - axis * (length * 0.5f);
-        Vector3 midB = center + axis * (length * 0.5f);
+        Vector2 center =
+            new Vector2(
+                bounds.center.x,
+                Mathf.Lerp(
+                    bounds.min.y,
+                    bounds.max.y,
+                    waterCurrentVerticalPosition));
 
-        // rectangle corners
-        Vector3 a = midA - ortho * radius;
-        Vector3 b = midB - ortho * radius;
-        Vector3 c = midB + ortho * radius;
-        Vector3 d = midA + ortho * radius;
-        Debug.DrawLine(a, b, col, duration);
-        Debug.DrawLine(b, c, col, duration);
-        Debug.DrawLine(c, d, col, duration);
-        Debug.DrawLine(d, a, col, duration);
+        Vector2 direction =
+            speed > 0f
+            ? Vector2.right
+            : Vector2.left;
 
-        // semicircles at ends (approx)
-        DrawHalfCircle(midB, ortho, -axis, radius, circleSegments / 2, col, duration);
-        DrawHalfCircle(midA, ortho, axis, radius, circleSegments / 2, col, duration);
+        float length =
+            waterCurrentBaseLength +
+            magnitude *
+            waterCurrentMagnitudeScale;
+
+        DrawCenteredArrow(
+            center,
+            direction,
+            length,
+            waterCurrentArrowHeadSize,
+            waterCurrentColor,
+            duration);
     }
 
-    void DrawHalfCircle(Vector3 center, Vector3 ortho, Vector3 dir, float radius, int segments, Color col, float duration)
+    private void DrawCenteredArrow(
+        Vector2 center,
+        Vector2 direction,
+        float length,
+        float headSize,
+        Color color,
+        float duration)
     {
-        if (segments < 2) segments = 2;
-        float startAng = Mathf.Atan2(ortho.y * dir.x - ortho.x * dir.y, Vector2.Dot(ortho, dir)); // not strictly needed
-        // build points rotating from -ortho to ortho around dir axis
-        Vector3 prev = center + (-ortho.normalized) * radius;
-        for (int i = 1; i <= segments; ++i)
+        Vector2 halfArrow = direction.normalized * length * 0.5f;
+        Vector2 start = center - halfArrow;
+        Vector2 end = center + halfArrow;
+
+        Debug.DrawLine(
+            start,
+            end,
+            color,
+            duration,
+            depthTest);
+
+        DrawArrowHead(
+            end,
+            direction,
+            headSize,
+            color,
+            duration);
+    }
+
+    private void DrawArrowHead(
+        Vector3 end,
+        Vector3 direction,
+        float size,
+        Color color,
+        float duration)
+    {
+        if(direction.sqrMagnitude < 0.000001f)
+            return;
+
+        direction.Normalize();
+
+        Vector3 right =
+            Quaternion.Euler(0f, 0f, 150f) *
+            direction *
+            size;
+
+        Vector3 left =
+            Quaternion.Euler(0f, 0f, -150f) *
+            direction *
+            size;
+
+        Debug.DrawLine(
+            end,
+            end + right,
+            color,
+            duration,
+            depthTest);
+
+        Debug.DrawLine(
+            end,
+            end + left,
+            color,
+            duration,
+            depthTest);
+    }
+
+    private void DrawCross(
+        Vector3 center,
+        float size,
+        Color color,
+        float duration)
+    {
+        Debug.DrawLine(
+            center + Vector3.left * size,
+            center + Vector3.right * size,
+            color,
+            duration,
+            depthTest);
+
+        Debug.DrawLine(
+            center + Vector3.down * size,
+            center + Vector3.up * size,
+            color,
+            duration,
+            depthTest);
+    }
+
+    private void RemoveDestroyedCacheEntries()
+    {
+        if(geometryCache.Count == 0)
+            return;
+
+        List<Collider2D> destroyed = null;
+
+        foreach(
+            KeyValuePair<Collider2D, ColliderGeometry> entry
+            in geometryCache)
         {
-            float t = (float)i / segments;
-            float ang = Mathf.PI * t; // 0..PI
-            Vector3 next = center + (Quaternion.AngleAxis(ang * Mathf.Rad2Deg, dir) * (-ortho.normalized)) * radius;
-            Debug.DrawLine(prev, next, col, duration);
-            prev = next;
+            if(entry.Key != null)
+                continue;
+
+            destroyed ??= new List<Collider2D>();
+            destroyed.Add(entry.Key);
         }
+
+        if(destroyed == null)
+            return;
+
+        for(int i = 0; i < destroyed.Count; i++)
+            geometryCache.Remove(destroyed[i]);
+    }
+
+    private static void DestroyGeneratedMesh(Mesh mesh)
+    {
+        if(mesh == null)
+            return;
+
+        if(Application.isPlaying)
+            Object.Destroy(mesh);
+        else
+            Object.DestroyImmediate(mesh);
     }
 }

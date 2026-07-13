@@ -25,15 +25,6 @@ namespace PhysicsWidgets2D
             private set;
         }
 
-
-
-        [Header("Contact Solver")]
-
-        [SerializeField]
-        private int contactIterations = 8;
-
-
-
         private void Awake()
         {
             if(Instance != null &&
@@ -47,7 +38,6 @@ namespace PhysicsWidgets2D
         }
 
 
-
         /// <summary>
         /// Solves all environmental physics contributions.
         /// </summary>
@@ -55,21 +45,10 @@ namespace PhysicsWidgets2D
             Rigidbody2D body,
             PhysicsFrame2D frame)
         {
-            ApplyForces(
-                body,
-                frame);
-
-
-            ApplyDamping(
-                body,
-                frame);
-
-
-            SolveContacts(
-                body,
-                frame);
+            ApplyForces(body, frame);
+            ApplyDamping(body, frame);
+            SolveContacts(body, frame);
         }
-
 
 
         /// <summary>
@@ -87,8 +66,6 @@ namespace PhysicsWidgets2D
                     ForceMode2D.Force);
             }
 
-
-
             // Forces applied at specific world positions.
             //
             // Examples:
@@ -98,13 +75,10 @@ namespace PhysicsWidgets2D
             //
             // Unity automatically converts these
             // into linear force + rotational torque.
-            for(int i = 0;
-                i < frame.ForceApplications.Count;
-                i++)
+            for(int i = 0; i < frame.ForceApplications.Count; i++)
             {
                 ForceApplication2D application =
                     frame.ForceApplications[i];
-
 
                 body.AddForceAtPosition(
                     application.Force,
@@ -112,18 +86,9 @@ namespace PhysicsWidgets2D
                     ForceMode2D.Force);
             }
 
-
-
-            if(!Mathf.Approximately(
-                frame.Torque,
-                0f))
-            {
-                body.AddTorque(
-                    frame.Torque,
-                    ForceMode2D.Force);
-            }
+            if(!Mathf.Approximately(frame.Torque, 0f))
+                body.AddTorque(frame.Torque, ForceMode2D.Force);
         }
-
 
 
         /// <summary>
@@ -142,9 +107,7 @@ namespace PhysicsWidgets2D
             Rigidbody2D body,
             PhysicsFrame2D frame)
         {
-            float linearDamping =
-                frame.LinearDamping;
-
+            float linearDamping = frame.LinearDamping;
 
             if(linearDamping > 0f)
             {
@@ -153,22 +116,16 @@ namespace PhysicsWidgets2D
                     linearDamping *
                     body.mass;
 
-
-                body.AddForce(
-                    dampingForce,
-                    ForceMode2D.Force);
+                body.AddForce(dampingForce, ForceMode2D.Force);
             }
 
-
-
-            float angularDamping =
-                frame.AngularDamping;
-
+            float angularDamping = frame.AngularDamping;
 
             if(angularDamping > 0f)
             {
                 float angularVelocityRadians =
-                    body.angularVelocity * Mathf.Deg2Rad;
+                    body.angularVelocity *
+                    Mathf.Deg2Rad;
 
                 float dampingTorque =
                     -angularVelocityRadians *
@@ -182,90 +139,104 @@ namespace PhysicsWidgets2D
         }
 
 
-
         /// <summary>
         /// Solves moving contact constraints.
         ///
-        /// Multiple conveyors are solved together.
+        /// Each contact receives one bounded impulse. Repeated force
+        /// iterations are intentionally avoided because Rigidbody2D
+        /// velocity is not integrated between calls.
         /// </summary>
         private void SolveContacts(
             Rigidbody2D body,
             PhysicsFrame2D frame)
         {
-            if(frame.ContactConstraints.Count == 0)
-                return;
-
-
-
-            for(int iteration = 0;
-                iteration < contactIterations;
-                iteration++)
+            if(body.bodyType != RigidbodyType2D.Dynamic ||
+               frame.ContactConstraints.Count == 0)
             {
-                for(int i = 0;
-                    i < frame.ContactConstraints.Count;
-                    i++)
-                {
-                    SolveContact(
-                        body,
-                        frame.ContactConstraints[i]);
-                }
+                return;
             }
-        }
 
+            for(int i = 0; i < frame.ContactConstraints.Count; i++)
+                SolveContact(body, frame.ContactConstraints[i]);
+        }
 
 
         /// <summary>
         /// Solves one moving surface constraint.
+        ///
+        /// The impulse is calculated from the effective mass at the contact
+        /// point and limited so one contact cannot intentionally overshoot
+        /// the surface velocity.
         /// </summary>
         private void SolveContact(
             Rigidbody2D body,
             ContactConstraint2D constraint)
         {
+            Vector2 tangent = constraint.Tangent.normalized;
+
+            if(tangent.sqrMagnitude < 0.000001f)
+                return;
+
             Vector2 pointVelocity =
-                body.GetPointVelocity(
-                    constraint.Point);
-
-
+                body.GetPointVelocity(constraint.Point);
 
             Vector2 relativeVelocity =
                 pointVelocity -
                 constraint.SurfaceVelocity;
 
-
-
             float tangentSpeed =
                 Vector2.Dot(
                     relativeVelocity,
-                    constraint.Tangent);
-
-
+                    tangent);
 
             if(Mathf.Abs(tangentSpeed) < 0.001f)
-            {
                 return;
-            }
 
+            float inverseMass =
+                body.mass > 0f
+                ? 1f / body.mass
+                : 0f;
 
+            Vector2 contactOffset =
+                constraint.Point -
+                body.worldCenterOfMass;
 
-            float impulse =
-                -tangentSpeed *
-                constraint.Friction *
-                constraint.Strength;
+            float leverArm =
+                contactOffset.x * tangent.y -
+                contactOffset.y * tangent.x;
 
+            float inverseInertia =
+                body.inertia > 0f
+                ? 1f / body.inertia
+                : 0f;
 
+            float effectiveInverseMass =
+                inverseMass +
+                leverArm *
+                leverArm *
+                inverseInertia;
 
-            Vector2 force =
-                constraint.Tangent *
-                impulse *
-                body.mass /
-                Time.fixedDeltaTime;
+            if(effectiveInverseMass <= 0f)
+                return;
 
+            float correctionStrength =
+                Mathf.Clamp01(
+                    constraint.Friction *
+                    constraint.Strength);
 
+            float impulseMagnitude =
+                -tangentSpeed /
+                effectiveInverseMass *
+                correctionStrength;
+
+            Vector2 impulse =
+                tangent *
+                impulseMagnitude;
 
             body.AddForceAtPosition(
-                force,
+                impulse,
                 constraint.Point,
-                ForceMode2D.Force);
+                ForceMode2D.Impulse);
         }
     }
 }
