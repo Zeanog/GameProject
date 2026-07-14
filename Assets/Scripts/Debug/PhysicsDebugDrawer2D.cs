@@ -36,35 +36,18 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
     [SerializeField] private bool drawBottomConveyorArrow = true;
     [SerializeField] private Color conveyorColor = new Color(1f, 0.25f, 0.1f, 1f);
     [SerializeField, Min(0.05f)] private float conveyorArrowLength = 1f;
-    [SerializeField, Min(0f)] private float conveyorArrowInset = 0.06f;
+    [SerializeField, Min(0f)] private float conveyorArrowInset = 0.1f;
     [SerializeField, Min(0.01f)] private float conveyorArrowHeadSize = 0.16f;
+    [SerializeField, Min(0f)] private float minimumConveyorSpeed = 0.001f;
 
     [Header("Water Current Drawing")]
     [SerializeField] private bool drawWaterCurrents = true;
     [SerializeField] private Color waterCurrentColor = new Color(0.1f, 0.9f, 1f, 1f);
-
-    [Tooltip("Arrow length when the current magnitude is nearly zero.")]
-    [SerializeField, Min(0f)]
-    private float waterCurrentBaseLength = 0.5f;
-
-    [Tooltip("Additional arrow length per unit of current speed.")]
-    [SerializeField, Min(0f)]
-    private float waterCurrentMagnitudeScale = 0.5f;
-
-    [SerializeField, Min(0.01f)]
-    private float waterCurrentArrowHeadSize = 0.16f;
-
-    [Tooltip(
-        "Vertical location of the arrow inside the water volume. " +
-        "Zero is the bottom and one is the top.")]
-    [SerializeField, Range(0f, 1f)]
-    private float waterCurrentVerticalPosition = 0.5f;
-
-    [Tooltip(
-        "Current magnitudes at or below this value are treated as zero " +
-        "and do not draw an arrow.")]
-    [SerializeField, Min(0f)]
-    private float minimumWaterCurrentMagnitude = 0.001f;
+    [SerializeField, Min(0f)] private float waterCurrentBaseLength = 0.5f;
+    [SerializeField, Min(0f)] private float waterCurrentMagnitudeScale = 0.5f;
+    [SerializeField, Min(0.01f)] private float waterCurrentArrowHeadSize = 0.16f;
+    [SerializeField, Range(0f, 1f)] private float waterCurrentVerticalPosition = 0.5f;
+    [SerializeField, Min(0f)] private float minimumWaterCurrentMagnitude = 0.001f;
 
     [Header("Refresh")]
     [SerializeField, Min(0.01f)] private float updateInterval = 0.05f;
@@ -81,13 +64,14 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
     private readonly Dictionary<Collider2D, ColliderGeometry> geometryCache =
         new Dictionary<Collider2D, ColliderGeometry>();
 
+
     private sealed class ColliderGeometry
     {
         public uint ShapeHash;
         public Vector3[] Vertices;
         public BoundaryEdge[] Edges;
-        public bool VerticesAreWorldSpace;
     }
+
 
     private readonly struct BoundaryEdge
     {
@@ -100,6 +84,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             End = end;
         }
     }
+
 
     private readonly struct EdgeKey
     {
@@ -136,20 +121,24 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
+
     private void OnEnable()
     {
         RefreshObjects();
     }
+
 
     private void OnDisable()
     {
         geometryCache.Clear();
     }
 
+
     private void OnDestroy()
     {
         geometryCache.Clear();
     }
+
 
     private void OnValidate()
     {
@@ -159,6 +148,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         conveyorArrowLength = Mathf.Max(0.05f, conveyorArrowLength);
         conveyorArrowInset = Mathf.Max(0f, conveyorArrowInset);
         conveyorArrowHeadSize = Mathf.Max(0.01f, conveyorArrowHeadSize);
+        minimumConveyorSpeed = Mathf.Max(0f, minimumConveyorSpeed);
         waterCurrentBaseLength = Mathf.Max(0f, waterCurrentBaseLength);
         waterCurrentMagnitudeScale = Mathf.Max(0f, waterCurrentMagnitudeScale);
         waterCurrentArrowHeadSize = Mathf.Max(0.01f, waterCurrentArrowHeadSize);
@@ -167,6 +157,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         RefreshObjects();
         geometryCache.Clear();
     }
+
 
     private void Update()
     {
@@ -193,6 +184,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         DrawAll();
     }
 
+
     private void RefreshObjects()
     {
         FindObjectsInactive inactiveMode =
@@ -217,6 +209,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             FindObjectsSortMode.None);
     }
 
+
     private void DrawAll()
     {
         float duration = Mathf.Max(0.01f, updateInterval * 1.1f);
@@ -233,6 +226,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         if(drawWaterCurrents)
             DrawAllWaterCurrents(duration);
     }
+
 
     private void DrawAllColliders(float duration)
     {
@@ -255,6 +249,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
+
     private void DrawAllRigidbodies(float duration)
     {
         for(int i = 0; i < rigidbodies.Length; i++)
@@ -267,6 +262,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             DrawRigidbody(body, rigidbodyColor, duration);
         }
     }
+
 
     private void DrawAllConveyors(float duration)
     {
@@ -286,6 +282,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
+
     private void DrawAllWaterCurrents(float duration)
     {
         for(int i = 0; i < waterVolumes.Length; i++)
@@ -304,6 +301,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
+
     private bool ShouldDraw(Component component)
     {
         if(component == null ||
@@ -314,6 +312,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
 
         return ((1 << component.gameObject.layer) & layers.value) != 0;
     }
+
 
     private void DrawCollider(
         Collider2D collider,
@@ -337,6 +336,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         DrawBounds(collider.bounds, color, duration);
     }
 
+
     private ColliderGeometry GetOrCreateGeometry(Collider2D collider)
     {
         uint shapeHash = collider.GetShapeHash();
@@ -349,7 +349,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             return geometry;
         }
 
-        Mesh mesh = collider.CreateMesh(false, false, true);
+        Mesh mesh = collider.CreateMesh(false, false, false);
 
         if(mesh == null)
         {
@@ -361,8 +361,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         {
             ShapeHash = shapeHash,
             Vertices = mesh.vertices,
-            Edges = ExtractBoundaryEdges(mesh.triangles),
-            VerticesAreWorldSpace = collider.attachedRigidbody == null
+            Edges = ExtractBoundaryEdges(mesh.triangles)
         };
 
         geometryCache[collider] = geometry;
@@ -370,6 +369,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
 
         return geometry;
     }
+
 
     private static BoundaryEdge[] ExtractBoundaryEdges(int[] triangles)
     {
@@ -400,6 +400,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         return boundaries.ToArray();
     }
 
+
     private static void CountEdge(
         Dictionary<EdgeKey, int> edgeCounts,
         int start,
@@ -413,27 +414,26 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             edgeCounts.Add(key, 1);
     }
 
+
     private void DrawMeshBoundary(
         Collider2D collider,
         ColliderGeometry geometry,
         Color color,
         float duration)
     {
-        Rigidbody2D attachedBody = collider.attachedRigidbody;
+        Matrix4x4 localToWorld = collider.localToWorldMatrix;
 
         for(int i = 0; i < geometry.Edges.Length; i++)
         {
             BoundaryEdge edge = geometry.Edges[i];
 
-            Vector3 start = geometry.Vertices[edge.Start];
-            Vector3 end = geometry.Vertices[edge.End];
+            Vector3 start =
+                localToWorld.MultiplyPoint3x4(
+                    geometry.Vertices[edge.Start]);
 
-            if(!geometry.VerticesAreWorldSpace &&
-               attachedBody != null)
-            {
-                start = attachedBody.transform.TransformPoint(start);
-                end = attachedBody.transform.TransformPoint(end);
-            }
+            Vector3 end =
+                localToWorld.MultiplyPoint3x4(
+                    geometry.Vertices[edge.End]);
 
             Debug.DrawLine(
                 start,
@@ -444,22 +444,23 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
+
     private void DrawEdgeCollider(
         EdgeCollider2D edge,
         Color color,
         float duration)
     {
         Vector2[] points = edge.points;
-        Transform edgeTransform = edge.transform;
+        Matrix4x4 localToWorld = edge.localToWorldMatrix;
 
         for(int i = 0; i + 1 < points.Length; i++)
         {
             Vector3 start =
-                edgeTransform.TransformPoint(
+                localToWorld.MultiplyPoint3x4(
                     edge.offset + points[i]);
 
             Vector3 end =
-                edgeTransform.TransformPoint(
+                localToWorld.MultiplyPoint3x4(
                     edge.offset + points[i + 1]);
 
             Debug.DrawLine(
@@ -470,6 +471,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
                 depthTest);
         }
     }
+
 
     private void DrawBounds(
         Bounds bounds,
@@ -493,6 +495,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         Debug.DrawLine(topRight, topLeft, color, duration, depthTest);
         Debug.DrawLine(topLeft, bottomLeft, color, duration, depthTest);
     }
+
 
     private void DrawRigidbody(
         Rigidbody2D body,
@@ -520,14 +523,9 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             duration);
 
         if(drawCenterOfMass)
-        {
-            DrawCross(
-                origin,
-                centerOfMassSize,
-                color,
-                duration);
-        }
+            DrawCross(origin, centerOfMassSize, color, duration);
     }
+
 
     private void DrawConveyor(
         NewConveyorBelt2D conveyor,
@@ -535,30 +533,31 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         float duration)
     {
         Vector2 surfaceVelocity = conveyor.SurfaceVelocity;
+        float speed = surfaceVelocity.magnitude;
 
-        if(surfaceVelocity.sqrMagnitude < 0.000001f)
+        if(speed <= minimumConveyorSpeed)
             return;
 
-        Vector2 direction = surfaceVelocity.normalized;
-        Vector2 topNormal = new Vector2(-direction.y, direction.x);
-
-        if(Vector2.Dot(topNormal, conveyor.transform.up) < 0f)
-            topNormal = -topNormal;
-
-        Vector2 center = collider.bounds.center;
+        Vector2 direction = surfaceVelocity / speed;
+        Vector2 surfaceNormal = conveyor.BeltNormal;
+        Vector2 center = collider.transform.TransformPoint(collider.offset);
         float searchDistance = collider.bounds.extents.magnitude + 1f;
 
         Vector2 topSurface =
             collider.ClosestPoint(
-                center + topNormal * searchDistance);
+                center + surfaceNormal * searchDistance);
 
         Vector2 bottomSurface =
             collider.ClosestPoint(
-                center - topNormal * searchDistance);
+                center - surfaceNormal * searchDistance);
 
         Vector2 topCenter =
             topSurface -
-            topNormal * conveyorArrowInset;
+            surfaceNormal * conveyorArrowInset;
+
+        Vector2 bottomCenter =
+            bottomSurface +
+            surfaceNormal * conveyorArrowInset;
 
         DrawCenteredArrow(
             topCenter,
@@ -570,10 +569,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
 
         if(drawBottomConveyorArrow)
         {
-            Vector2 bottomCenter =
-                bottomSurface +
-                topNormal * conveyorArrowInset;
-
             DrawCenteredArrow(
                 bottomCenter,
                 -direction,
@@ -583,6 +578,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
                 duration);
         }
     }
+
 
     private void DrawWaterCurrent(
         WaterVolume2D water,
@@ -624,6 +620,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             duration);
     }
 
+
     private void DrawCenteredArrow(
         Vector2 center,
         Vector2 direction,
@@ -650,6 +647,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             color,
             duration);
     }
+
 
     private void DrawArrowHead(
         Vector3 end,
@@ -688,6 +686,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             depthTest);
     }
 
+
     private void DrawCross(
         Vector3 center,
         float size,
@@ -708,6 +707,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             duration,
             depthTest);
     }
+
 
     private void RemoveDestroyedCacheEntries()
     {
@@ -733,6 +733,7 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         for(int i = 0; i < destroyed.Count; i++)
             geometryCache.Remove(destroyed[i]);
     }
+
 
     private static void DestroyGeneratedMesh(Mesh mesh)
     {

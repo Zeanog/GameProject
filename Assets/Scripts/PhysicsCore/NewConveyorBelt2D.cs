@@ -5,22 +5,18 @@ namespace PhysicsWidgets2D
     /// <summary>
     /// A physics-based 2D conveyor belt.
     ///
-    /// This component represents a moving contact surface.
+    /// The conveyor moves along the long axis of its Collider2D:
+    /// - positive speed moves along the positive local belt axis
+    /// - negative speed moves along the negative local belt axis
     ///
-    /// It does NOT:
-    /// - modify Rigidbody2D velocity
-    /// - apply forces directly
-    /// - move objects
+    /// For CapsuleCollider2D:
+    /// - Horizontal uses local X
+    /// - Vertical uses local Y
     ///
-    /// Instead, it generates ContactConstraint2D entries which are solved
-    /// by PhysicsSolver2D.
+    /// Rotation controls the belt's world-space orientation.
     ///
-    /// This allows:
-    /// - multiple conveyors affecting the same object
-    /// - opposing conveyors
-    /// - sloped conveyors
-    /// - underside collisions
-    /// - future moving platforms and rollers
+    /// This component generates ContactConstraint2D entries which are
+    /// solved by PhysicsSolver2D.
     /// </summary>
     [RequireComponent(typeof(Collider2D))]
     [DisallowMultipleComponent]
@@ -29,29 +25,53 @@ namespace PhysicsWidgets2D
     public class NewConveyorBelt2D : MonoBehaviour, IContactProvider2D
     {
         [Header("Movement")]
-        [Tooltip("Direction of conveyor motion in local space.")]
-        [SerializeField]
-        private Vector2 localDirection = Vector2.right;
 
-        [Tooltip("Surface speed in world units per second.")]
+        [Tooltip(
+            "Signed surface speed in world units per second. " +
+            "Positive follows the collider's positive long axis; negative reverses it.")]
         [SerializeField]
         private float speed = 3f;
 
         [Header("Physics")]
-        [Tooltip("Friction coefficient controlling how strongly the belt transfers motion.")]
+
+        [Tooltip(
+            "Controls how strongly the package velocity follows the belt.")]
         [SerializeField]
+        [Range(0f, 1f)]
         private float friction = 1f;
 
         [Tooltip("Overall strength multiplier.")]
         [SerializeField]
+        [Min(0f)]
         private float strength = 1f;
 
+        private Collider2D beltCollider;
 
-        public Vector2 WorldDirection
+
+        public float Speed
         {
             get
             {
-                return transform.TransformDirection(localDirection).normalized;
+                return speed;
+            }
+        }
+
+        public Vector2 BeltAxis
+        {
+            get
+            {
+                Vector2 localAxis = GetLocalBeltAxis();
+                return transform.TransformDirection(localAxis).normalized;
+            }
+        }
+
+        public Vector2 BeltNormal
+        {
+            get
+            {
+                Vector2 localAxis = GetLocalBeltAxis();
+                Vector2 localNormal = new Vector2(-localAxis.y, localAxis.x);
+                return transform.TransformDirection(localNormal).normalized;
             }
         }
 
@@ -59,19 +79,55 @@ namespace PhysicsWidgets2D
         {
             get
             {
-                return WorldDirection * speed;
+                return BeltAxis * speed;
             }
         }
+
 
         private void Awake()
         {
-            Collider2D beltCollider = GetComponent<Collider2D>();
-            if(beltCollider != null && beltCollider.isTrigger)
+            beltCollider = GetComponent<Collider2D>();
+
+            if(beltCollider != null &&
+               beltCollider.isTrigger)
             {
-                Debug.LogWarning(name + ": ConveyorBelt2D should use a non-trigger Collider2D.");
+                Debug.LogWarning(
+                    name +
+                    ": ConveyorBelt2D should use a non-trigger Collider2D.");
+            }
+        }
+
+
+        private void OnValidate()
+        {
+            beltCollider = GetComponent<Collider2D>();
+        }
+
+
+        private Vector2 GetLocalBeltAxis()
+        {
+            if(beltCollider == null)
+                beltCollider = GetComponent<Collider2D>();
+
+            if(beltCollider is CapsuleCollider2D capsule)
+            {
+                return
+                    capsule.direction == CapsuleDirection2D.Horizontal
+                    ? Vector2.right
+                    : Vector2.up;
             }
 
+            if(beltCollider is BoxCollider2D box)
+            {
+                return
+                    box.size.x >= box.size.y
+                    ? Vector2.right
+                    : Vector2.up;
+            }
+
+            return Vector2.right;
         }
+
 
         public void EvaluateContact(
             Rigidbody2D body,
@@ -85,7 +141,7 @@ namespace PhysicsWidgets2D
                 new ContactConstraint2D(
                     point: contact.point,
                     normal: contact.normal,
-                    tangent: WorldDirection,
+                    tangent: BeltAxis,
                     surfaceVelocity: SurfaceVelocity,
                     friction: friction,
                     strength: strength);

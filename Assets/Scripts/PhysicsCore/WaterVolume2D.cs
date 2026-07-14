@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace PhysicsWidgets2D
@@ -5,14 +6,15 @@ namespace PhysicsWidgets2D
     /// <summary>
     /// Simplified 2D water volume.
     ///
-    /// Version 0.7 behavior:
+    /// Version 0.9 behavior:
     /// - Assumes BoxCollider2D objects.
-    /// - Calculates approximate submerged area.
-    /// - Applies buoyancy based on fluid density.
-    /// - Applies damping based on submerged fraction.
+    /// - Calculates the exact box area overlapping the water bounds.
+    /// - Applies buoyancy at the submerged area's centroid.
+    /// - Applies linear and nonlinear fluid resistance.
     /// - Applies a uniform horizontal fluid current.
     ///
-    /// This intentionally does NOT apply buoyancy torque yet.
+    /// Applying buoyancy at the submerged centroid naturally produces
+    /// righting torque during partial submersion.
     /// </summary>
     [RequireComponent(typeof(Collider2D))]
     public class WaterVolume2D :
@@ -33,8 +35,19 @@ namespace PhysicsWidgets2D
         [SerializeField]
         private float linearDamping = 2f;
 
+        [Tooltip(
+            "Linear rotational resistance. This remains effective as " +
+            "rotation slows and controls final settling.")]
         [SerializeField]
-        private float angularDamping = 0.5f;
+        [Min(0f)]
+        private float angularDamping = 0.2f;
+
+        [Tooltip(
+            "Additional rotational resistance that increases with the " +
+            "square of angular speed. This primarily limits rapid spinning.")]
+        [SerializeField]
+        [Min(0f)]
+        private float quadraticAngularDamping = 0.05f;
 
         [Header("Fluid Current")]
 
@@ -68,6 +81,7 @@ namespace PhysicsWidgets2D
         private Collider2D waterCollider;
         private float nextDiagnosticTime;
 
+
         private void Awake()
         {
             waterCollider = GetComponent<Collider2D>();
@@ -87,27 +101,51 @@ namespace PhysicsWidgets2D
             if(box == null)
                 return;
 
-            float submergedFraction = CalculateSubmergedFraction(box);
+            float totalArea = CalculateBoxArea(box);
 
-            if(submergedFraction <= 0f)
+            if(totalArea <= 0f)
                 return;
 
-            float totalArea = CalculateBoxArea(box);
-            float submergedArea = totalArea * submergedFraction;
+            List<Vector2> submergedPolygon = CalculateSubmergedPolygon(box);
+
+            if(!TryCalculatePolygonProperties(
+                    submergedPolygon,
+                    out float submergedArea,
+                    out Vector2 centerOfBuoyancy))
+            {
+                return;
+            }
+
+            float submergedFraction =
+                Mathf.Clamp01(submergedArea / totalArea);
+
             float buoyancyForce = CalculateBuoyancyForce(submergedArea);
             Vector2 currentForce = CalculateCurrentForce(body, submergedFraction);
+            float quadraticDampingTorque =
+                CalculateQuadraticAngularDampingTorque(
+                    body,
+                    submergedFraction);
 
-            ApplyBuoyancy(buoyancyForce, frame);
+            ApplyBuoyancy(
+                buoyancyForce,
+                centerOfBuoyancy,
+                frame);
+
             ApplyCurrent(currentForce, frame);
             ApplyDamping(submergedFraction, frame);
+            ApplyQuadraticAngularDamping(
+                quadraticDampingTorque,
+                frame);
 
             LogDiagnostics(
                 body,
                 submergedFraction,
                 totalArea,
                 submergedArea,
+                centerOfBuoyancy,
                 buoyancyForce,
-                currentForce);
+                currentForce,
+                quadraticDampingTorque);
         }
 
 
@@ -136,8 +174,26 @@ namespace PhysicsWidgets2D
         }
 
 
+        private float CalculateQuadraticAngularDampingTorque(
+            Rigidbody2D body,
+            float submergedFraction)
+        {
+            float angularVelocityRadians =
+                body.angularVelocity *
+                Mathf.Deg2Rad;
+
+            return
+                -angularVelocityRadians *
+                Mathf.Abs(angularVelocityRadians) *
+                quadraticAngularDamping *
+                body.inertia *
+                submergedFraction;
+        }
+
+
         private void ApplyBuoyancy(
             float forceMagnitude,
+            Vector2 centerOfBuoyancy,
             PhysicsFrame2D frame)
         {
             float gravityMagnitude = Physics2D.gravity.magnitude;
@@ -147,9 +203,9 @@ namespace PhysicsWidgets2D
 
             Vector2 forceDirection = -Physics2D.gravity.normalized;
 
-            frame.AddForce(
-                forceDirection *
-                forceMagnitude);
+            frame.AddForceAtPosition(
+                forceDirection * forceMagnitude,
+                centerOfBuoyancy);
         }
 
 
@@ -159,6 +215,15 @@ namespace PhysicsWidgets2D
         {
             if(currentForce != Vector2.zero)
                 frame.AddForce(currentForce);
+        }
+
+
+        private void ApplyQuadraticAngularDamping(
+            float dampingTorque,
+            PhysicsFrame2D frame)
+        {
+            if(!Mathf.Approximately(dampingTorque, 0f))
+                frame.AddTorque(dampingTorque);
         }
 
 
@@ -178,51 +243,194 @@ namespace PhysicsWidgets2D
         }
 
 
-        private float CalculateSubmergedFraction(
+        private List<Vector2> CalculateSubmergedPolygon(
             BoxCollider2D box)
         {
-            Vector2[] corners =
+            float halfWidth = box.size.x * 0.5f;
+            float halfHeight = box.size.y * 0.5f;
+
+            List<Vector2> polygon =
+                new List<Vector2>
+                {
+                    box.transform.TransformPoint(
+                        box.offset +
+                        new Vector2(-halfWidth, -halfHeight)),
+
+                    box.transform.TransformPoint(
+                        box.offset +
+                        new Vector2(halfWidth, -halfHeight)),
+
+                    box.transform.TransformPoint(
+                        box.offset +
+                        new Vector2(halfWidth, halfHeight)),
+
+                    box.transform.TransformPoint(
+                        box.offset +
+                        new Vector2(-halfWidth, halfHeight))
+                };
+
+            Bounds waterBounds = waterCollider.bounds;
+
+            polygon = ClipAgainstVerticalBoundary(
+                polygon,
+                waterBounds.min.x,
+                keepGreater: true);
+
+            polygon = ClipAgainstVerticalBoundary(
+                polygon,
+                waterBounds.max.x,
+                keepGreater: false);
+
+            polygon = ClipAgainstHorizontalBoundary(
+                polygon,
+                waterBounds.min.y,
+                keepGreater: true);
+
+            polygon = ClipAgainstHorizontalBoundary(
+                polygon,
+                waterBounds.max.y,
+                keepGreater: false);
+
+            return polygon;
+        }
+
+
+        private List<Vector2> ClipAgainstVerticalBoundary(
+            List<Vector2> input,
+            float boundary,
+            bool keepGreater)
+        {
+            List<Vector2> output = new List<Vector2>();
+
+            if(input.Count == 0)
+                return output;
+
+            Vector2 previous = input[input.Count - 1];
+            bool previousInside =
+                keepGreater
+                ? previous.x >= boundary
+                : previous.x <= boundary;
+
+            for(int i = 0; i < input.Count; i++)
             {
-                box.transform.TransformPoint(
-                    box.offset +
-                    new Vector2(-box.size.x * 0.5f,
-                                -box.size.y * 0.5f)),
+                Vector2 current = input[i];
+                bool currentInside =
+                    keepGreater
+                    ? current.x >= boundary
+                    : current.x <= boundary;
 
-                box.transform.TransformPoint(
-                    box.offset +
-                    new Vector2(-box.size.x * 0.5f,
-                                box.size.y * 0.5f)),
+                if(currentInside != previousInside)
+                {
+                    float denominator = current.x - previous.x;
 
-                box.transform.TransformPoint(
-                    box.offset +
-                    new Vector2(box.size.x * 0.5f,
-                                box.size.y * 0.5f)),
+                    if(Mathf.Abs(denominator) > 0.000001f)
+                    {
+                        float t = (boundary - previous.x) / denominator;
 
-                box.transform.TransformPoint(
-                    box.offset +
-                    new Vector2(box.size.x * 0.5f,
-                                -box.size.y * 0.5f))
-            };
+                        output.Add(
+                            Vector2.Lerp(
+                                previous,
+                                current,
+                                t));
+                    }
+                }
 
-            float minY = float.MaxValue;
-            float maxY = float.MinValue;
+                if(currentInside)
+                    output.Add(current);
 
-            foreach(Vector2 corner in corners)
-            {
-                minY = Mathf.Min(minY, corner.y);
-                maxY = Mathf.Max(maxY, corner.y);
+                previous = current;
+                previousInside = currentInside;
             }
 
-            float waterSurface = waterCollider.bounds.max.y;
-            float height = maxY - minY;
+            return output;
+        }
 
-            if(height <= 0f)
-                return 0f;
 
-            float submerged = waterSurface - minY;
+        private List<Vector2> ClipAgainstHorizontalBoundary(
+            List<Vector2> input,
+            float boundary,
+            bool keepGreater)
+        {
+            List<Vector2> output = new List<Vector2>();
 
-            return Mathf.Clamp01(
-                submerged / height);
+            if(input.Count == 0)
+                return output;
+
+            Vector2 previous = input[input.Count - 1];
+            bool previousInside =
+                keepGreater
+                ? previous.y >= boundary
+                : previous.y <= boundary;
+
+            for(int i = 0; i < input.Count; i++)
+            {
+                Vector2 current = input[i];
+                bool currentInside =
+                    keepGreater
+                    ? current.y >= boundary
+                    : current.y <= boundary;
+
+                if(currentInside != previousInside)
+                {
+                    float denominator = current.y - previous.y;
+
+                    if(Mathf.Abs(denominator) > 0.000001f)
+                    {
+                        float t = (boundary - previous.y) / denominator;
+
+                        output.Add(
+                            Vector2.Lerp(
+                                previous,
+                                current,
+                                t));
+                    }
+                }
+
+                if(currentInside)
+                    output.Add(current);
+
+                previous = current;
+                previousInside = currentInside;
+            }
+
+            return output;
+        }
+
+
+        private bool TryCalculatePolygonProperties(
+            List<Vector2> polygon,
+            out float area,
+            out Vector2 centroid)
+        {
+            area = 0f;
+            centroid = Vector2.zero;
+
+            if(polygon == null || polygon.Count < 3)
+                return false;
+
+            float signedDoubleArea = 0f;
+            Vector2 centroidSum = Vector2.zero;
+
+            for(int i = 0; i < polygon.Count; i++)
+            {
+                Vector2 current = polygon[i];
+                Vector2 next = polygon[(i + 1) % polygon.Count];
+
+                float cross =
+                    current.x * next.y -
+                    next.x * current.y;
+
+                signedDoubleArea += cross;
+                centroidSum += (current + next) * cross;
+            }
+
+            if(Mathf.Abs(signedDoubleArea) <= 0.000001f)
+                return false;
+
+            area = Mathf.Abs(signedDoubleArea) * 0.5f;
+            centroid = centroidSum / (3f * signedDoubleArea);
+
+            return true;
         }
 
 
@@ -245,8 +453,10 @@ namespace PhysicsWidgets2D
             float submergedFraction,
             float totalArea,
             float submergedArea,
+            Vector2 centerOfBuoyancy,
             float buoyancyForce,
-            Vector2 currentForce)
+            Vector2 currentForce,
+            float quadraticDampingTorque)
         {
             if(!logDiagnostics ||
                Time.time < nextDiagnosticTime)
@@ -271,6 +481,8 @@ namespace PhysicsWidgets2D
                 $"submerged={submergedFraction:F3}, " +
                 $"area={totalArea:F3}, " +
                 $"submergedArea={submergedArea:F3}, " +
+                $"centerOfBuoyancy=({centerOfBuoyancy.x:F3}, " +
+                $"{centerOfBuoyancy.y:F3}), " +
                 $"mass={body.mass:F3}, " +
                 $"buoyancy={buoyancyForce:F3}, " +
                 $"weight={weight:F3}, " +
@@ -278,7 +490,9 @@ namespace PhysicsWidgets2D
                 $"currentSpeed={horizontalCurrentSpeed:F3}, " +
                 $"currentForceX={currentForce.x:F3}, " +
                 $"velocity=({body.linearVelocity.x:F3}, " +
-                $"{body.linearVelocity.y:F3})");
+                $"{body.linearVelocity.y:F3}), " +
+                $"angularVelocity={body.angularVelocity:F3}, " +
+                $"quadraticTorque={quadraticDampingTorque:F3}");
         }
     }
 }
