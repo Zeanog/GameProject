@@ -1,0 +1,26 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 68516567adbed38409545c9293f52604, type: 3}
+  m_Name: AppleDefinition
+  m_EditorClassIdentifier: Assembly-CSharp::PhysicsWidgets2D.ProductDefinition2D
+  productName: Apple
+  physicsPrefab: {fileID: 0}
+  normalVisuals: []
+  defectiveVisuals: []
+  slowReleaseDelay: 1
+  mediumReleaseDelay: 0.5
+  fastReleaseDelay: 0.2
+  releaseDelayJitter: 0.15
+  nominalMass: 1
+  massVariation: 0.1
+  spawnPositionVariation: {x: 0.05, y: 0}
+  initialRotationRange: {x: 0, y: 360}
