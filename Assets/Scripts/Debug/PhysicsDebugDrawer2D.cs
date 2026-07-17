@@ -18,6 +18,11 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
 
     [Header("Collider Drawing")]
     [SerializeField] private bool drawColliders = true;
+    [Tooltip(
+        "Draw collider outlines and Rigidbody diagnostics for Dynamic and " +
+        "Kinematic bodies. Disabled by default so rendered products such as " +
+        "apples and packages do not receive lagging debug outlines.")]
+    [SerializeField] private bool drawMovableBodies = false;
     [SerializeField] private Color solidColliderColor = new Color(0f, 1f, 0f, 0.9f);
     [SerializeField] private Color triggerColliderColor = new Color(0f, 0.8f, 1f, 0.9f);
     [SerializeField] private bool drawTriggers = true;
@@ -64,14 +69,12 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
     private readonly Dictionary<Collider2D, ColliderGeometry> geometryCache =
         new Dictionary<Collider2D, ColliderGeometry>();
 
-
     private sealed class ColliderGeometry
     {
         public uint ShapeHash;
         public Vector3[] Vertices;
         public BoundaryEdge[] Edges;
     }
-
 
     private readonly struct BoundaryEdge
     {
@@ -84,7 +87,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             End = end;
         }
     }
-
 
     private readonly struct EdgeKey
     {
@@ -121,24 +123,20 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
-
     private void OnEnable()
     {
         RefreshObjects();
     }
-
 
     private void OnDisable()
     {
         geometryCache.Clear();
     }
 
-
     private void OnDestroy()
     {
         geometryCache.Clear();
     }
-
 
     private void OnValidate()
     {
@@ -157,7 +155,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         RefreshObjects();
         geometryCache.Clear();
     }
-
 
     private void Update()
     {
@@ -184,7 +181,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         DrawAll();
     }
 
-
     private void RefreshObjects()
     {
         FindObjectsInactive inactiveMode =
@@ -209,7 +205,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             FindObjectsSortMode.None);
     }
 
-
     private void DrawAll()
     {
         float duration = Mathf.Max(0.01f, updateInterval * 1.1f);
@@ -227,7 +222,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             DrawAllWaterCurrents(duration);
     }
 
-
     private void DrawAllColliders(float duration)
     {
         for(int i = 0; i < colliders.Length; i++)
@@ -236,6 +230,14 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
 
             if(!ShouldDraw(collider) || !collider.enabled)
                 continue;
+
+            Rigidbody2D owningBody = GetOwningRigidbody(collider);
+
+            if(!drawMovableBodies &&
+               IsMovableBody(owningBody))
+            {
+                continue;
+            }
 
             if(collider.isTrigger && !drawTriggers)
                 continue;
@@ -249,7 +251,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
-
     private void DrawAllRigidbodies(float duration)
     {
         for(int i = 0; i < rigidbodies.Length; i++)
@@ -259,10 +260,15 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             if(!ShouldDraw(body))
                 continue;
 
+            if(!drawMovableBodies &&
+               IsMovableBody(body))
+            {
+                continue;
+            }
+
             DrawRigidbody(body, rigidbodyColor, duration);
         }
     }
-
 
     private void DrawAllConveyors(float duration)
     {
@@ -282,7 +288,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
-
     private void DrawAllWaterCurrents(float duration)
     {
         for(int i = 0; i < waterVolumes.Length; i++)
@@ -301,7 +306,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
-
     private bool ShouldDraw(Component component)
     {
         if(component == null ||
@@ -313,6 +317,26 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         return ((1 << component.gameObject.layer) & layers.value) != 0;
     }
 
+    private Rigidbody2D GetOwningRigidbody(Collider2D collider)
+    {
+        if(collider == null)
+            return null;
+
+        if(collider.attachedRigidbody != null)
+            return collider.attachedRigidbody;
+
+        return collider.GetComponentInParent<Rigidbody2D>();
+    }
+
+    private bool IsMovableBody(Rigidbody2D body)
+    {
+        if(body == null)
+            return false;
+
+        return
+            body.bodyType == RigidbodyType2D.Dynamic ||
+            body.bodyType == RigidbodyType2D.Kinematic;
+    }
 
     private void DrawCollider(
         Collider2D collider,
@@ -335,7 +359,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
 
         DrawBounds(collider.bounds, color, duration);
     }
-
 
     private ColliderGeometry GetOrCreateGeometry(Collider2D collider)
     {
@@ -370,7 +393,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         return geometry;
     }
 
-
     private static BoundaryEdge[] ExtractBoundaryEdges(int[] triangles)
     {
         Dictionary<EdgeKey, int> edgeCounts =
@@ -400,7 +422,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         return boundaries.ToArray();
     }
 
-
     private static void CountEdge(
         Dictionary<EdgeKey, int> edgeCounts,
         int start,
@@ -413,7 +434,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         else
             edgeCounts.Add(key, 1);
     }
-
 
     private void DrawMeshBoundary(
         Collider2D collider,
@@ -444,7 +464,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
-
     private void DrawEdgeCollider(
         EdgeCollider2D edge,
         Color color,
@@ -472,7 +491,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
-
     private void DrawBounds(
         Bounds bounds,
         Color color,
@@ -495,7 +513,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         Debug.DrawLine(topRight, topLeft, color, duration, depthTest);
         Debug.DrawLine(topLeft, bottomLeft, color, duration, depthTest);
     }
-
 
     private void DrawRigidbody(
         Rigidbody2D body,
@@ -525,7 +542,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         if(drawCenterOfMass)
             DrawCross(origin, centerOfMassSize, color, duration);
     }
-
 
     private void DrawConveyor(
         NewConveyorBelt2D conveyor,
@@ -579,7 +595,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         }
     }
 
-
     private void DrawWaterCurrent(
         WaterVolume2D water,
         Collider2D collider,
@@ -620,7 +635,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             duration);
     }
 
-
     private void DrawCenteredArrow(
         Vector2 center,
         Vector2 direction,
@@ -647,7 +661,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             color,
             duration);
     }
-
 
     private void DrawArrowHead(
         Vector3 end,
@@ -686,7 +699,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             depthTest);
     }
 
-
     private void DrawCross(
         Vector3 center,
         float size,
@@ -707,7 +719,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
             duration,
             depthTest);
     }
-
 
     private void RemoveDestroyedCacheEntries()
     {
@@ -733,7 +744,6 @@ public class PhysicsDebugDrawer2D : MonoBehaviour
         for(int i = 0; i < destroyed.Count; i++)
             geometryCache.Remove(destroyed[i]);
     }
-
 
     private static void DestroyGeneratedMesh(Mesh mesh)
     {
