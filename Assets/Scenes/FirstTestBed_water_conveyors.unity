@@ -1144,6 +1144,7 @@ MonoBehaviour:
     m_Bits: 4294967295
   includeInactiveObjects: 0
   drawColliders: 1
+  drawMovableBodies: 0
   solidColliderColor: {r: 0, g: 1, b: 0, a: 0.9}
   triggerColliderColor: {r: 0, g: 0.8, b: 1, a: 0.9}
   drawTriggers: 1
